@@ -1,21 +1,13 @@
 """
 Standalone script to generate a degraded dataset and save it to disk.
-Useful for pre-generating training data without running the API.
 
 Usage:
     python scripts/generate_dataset.py \
-        --source demo \
-        --output data/train.jsonl \
-        --variants 3 \
-        --scenario mixed \
-        --seed 42
-
-For real data:
-    python scripts/generate_dataset.py \
         --source rolargesum \
-        --max-sentences 50000 \
+        --max-sentences 60000 \
         --output data/train.jsonl \
-        --variants 2
+        --val-split 0.2 \
+        --seed 42
 """
 
 import argparse
@@ -29,23 +21,31 @@ from app.degradation import DegradationConfig, DegradationScenario, generate_sam
 from app.data_loader import DEMO_SENTENCES, load_rolargesum, load_text_file
 
 
+def write_jsonl(samples, path):
+    with open(path, "w", encoding="utf-8") as f:
+        for s in samples:
+            f.write(json.dumps({
+                "input": s.input,
+                "target": s.target,
+                "scenario": s.scenario,
+                "changed_positions": s.changed_positions,
+            }, ensure_ascii=False) + "\n")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Generate degraded Romanian text dataset.")
-    parser.add_argument("--source", default="demo",
-                        choices=["demo", "rolargesum", "file"],
-                        help="Data source")
-    parser.add_argument("--file", default=None, help="Path to text file (when --source file)")
+    parser.add_argument("--source", default="demo", choices=["demo", "rolargesum", "file"])
+    parser.add_argument("--file", default=None)
     parser.add_argument("--max-sentences", type=int, default=10_000)
     parser.add_argument("--output", default="data/train.jsonl")
-    parser.add_argument("--variants", type=int, default=1,
-                        help="Degraded variants per input sentence")
-    parser.add_argument("--scenario", default="mixed",
-                        choices=[s.value for s in DegradationScenario])
+    parser.add_argument("--variants", type=int, default=1)
+    parser.add_argument("--scenario", default="mixed", choices=[s.value for s in DegradationScenario])
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--strip-prob", type=float, default=0.5)
     parser.add_argument("--wrong-diac-prob", type=float, default=0.3)
     parser.add_argument("--wrong-swap-prob", type=float, default=0.2)
     parser.add_argument("--ocr-prob", type=float, default=0.02)
+    parser.add_argument("--val-split", type=float, default=0.0)
     args = parser.parse_args()
 
     # Load texts
@@ -61,8 +61,16 @@ def main():
         texts = load_text_file(args.file, max_sentences=args.max_sentences)
     else:
         texts = DEMO_SENTENCES
-
     print(f"    → {len(texts)} sentences loaded")
+
+    # Split train/val
+    if args.val_split > 0:
+        split_idx = int(len(texts) * (1 - args.val_split))
+        train_texts = texts[:split_idx]
+        val_texts = texts[split_idx:]
+    else:
+        train_texts = texts
+        val_texts = []
 
     # Configure degradation
     config = DegradationConfig(
@@ -75,28 +83,30 @@ def main():
     )
 
     # Generate
-    print(f"[2/3] Generating degraded samples ({args.variants} variant(s) per sentence)…")
-    samples = generate_samples(texts, config, per_text_variants=args.variants)
-    print(f"    → {len(samples)} total samples")
+    print(f"[2/3] Generating samples…")
+    train_samples = generate_samples(train_texts, config, per_text_variants=args.variants)
+    print(f"    → {len(train_samples)} train samples")
 
-    # Write JSONL
+    val_samples = []
+    if val_texts:
+        val_samples = generate_samples(val_texts, config, per_text_variants=args.variants)
+        print(f"    → {len(val_samples)} val samples")
+
+    # Write files
+    print(f"[3/3] Writing files…")
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    print(f"[3/3] Writing to {out_path}…")
-    with open(out_path, "w", encoding="utf-8") as f:
-        for s in samples:
-            f.write(json.dumps({
-                "input": s.input,
-                "target": s.target,
-                "scenario": s.scenario,
-                "changed_positions": s.changed_positions,
-            }, ensure_ascii=False) + "\n")
+    write_jsonl(train_samples, out_path)
+    print(f"    → train: {out_path}")
 
-    print(f"Done! {len(samples)} samples → {out_path}")
+    if val_samples:
+        val_path = out_path.parent / "val.jsonl"
+        write_jsonl(val_samples, val_path)
+        print(f"    → val:   {val_path}")
 
-    # Print a few examples
+    # Preview
     print("\n--- Sample preview (first 3) ---")
-    for s in samples[:3]:
+    for s in train_samples[:3]:
         print(f"  scenario : {s.scenario}")
         print(f"  target   : {s.target}")
         print(f"  input    : {s.input}")
