@@ -1,0 +1,6 @@
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+pydantic>=2.7.0
+datasets>=2.19.0
+huggingface-hub>=0.23.0
+pytest
