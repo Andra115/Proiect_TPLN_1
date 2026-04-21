@@ -9,7 +9,7 @@ WHAT THIS MODULE DOES:
   acts as a rule-based safety net that fixes those mistakes AFTER the model runs.
 
   Rules applied (in order):
-    1. Re-align spaces that OCR noise may have broken and fix OCR noise artifacts
+    1. Fix OCR noise artifacts
     2. Preserve tokens the model should never touch:
        - URLs (https://..., www....)
        - Email addresses (user@domain.com)
@@ -164,8 +164,6 @@ def fix_ocr_space_errors(model_input: str, model_output: str) -> tuple[str, list
     if cleaned != model_output:
         changes.append("collapsed multiple consecutive spaces")
         model_output = cleaned
-
-    # TODO: fix merged words and split words without relying on positional alignment.
 
     return model_output, changes
 
@@ -340,9 +338,19 @@ if __name__ == "__main__":
             "model_output": "Ştefan şi ţara lui.",
         },
         {
+            "description": "OCR errors",
+            "model_input": "Mergem la munte maine.",
+            "model_output": "Mergem la rnunte  mâine.",
+        },
+        {
+            "description": "Word count mismatch",
+            "model_input": "Au venit multe persoane la eveniment.",
+            "model_output": "Au venit multe persoanela eveniment.",
+        },
+        {
             "description": "Clean output — no changes needed",
             "model_input":  "Ploaia a inundat orașul.",
-            "model_output": "Ploaia a inundat orașul.",
+            "model_output": "Ploaia a inundat orasul.",
         },
     ]
 
