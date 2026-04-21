@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Diacritizare Română</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600&family=Source+Sans+3:wght@400;600&display=swap');
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Source Sans 3', sans-serif;
+      background: #fafaf8;
+      color: #1a1a1a;
+      min-height: 100vh;
+      padding: 2.5rem 1rem;
+    }
+
+    .container {
+      max-width: 720px;
+      margin: 0 auto;
+    }
+
+    h1 {
+      font-family: 'Playfair Display', serif;
+      font-size: 2.2rem;
+      margin-bottom: 0.3rem;
+    }
+
+    .subtitle {
+      color: #888;
+      font-size: 0.95rem;
+      margin-bottom: 2rem;
+    }
+
+    label {
+      font-weight: 600;
+      font-size: 0.9rem;
+      display: block;
+      margin-bottom: 0.4rem;
+    }
+
+    textarea {
+      width: 100%;
+      height: 130px;
+      padding: 0.8rem 1rem;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      font-family: inherit;
+      font-size: 1rem;
+      resize: vertical;
+      background: #fff;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    textarea:focus { border-color: #c8a96e; }
+
+    button {
+      margin-top: 1rem;
+      width: 100%;
+      padding: 0.75rem;
+      background: #1a1a1a;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      font-family: inherit;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    button:hover { background: #333; }
+    button:disabled { background: #aaa; cursor: not-allowed; }
+
+    hr { border: none; border-top: 1px solid #e0ddd6; margin: 2rem 0; }
+
+    .result-box {
+      background: #fff;
+      border: 1px solid #e0ddd6;
+      border-left: 4px solid #c8a96e;
+      border-radius: 6px;
+      padding: 1rem 1.2rem;
+      font-size: 1.05rem;
+      line-height: 1.7;
+      min-height: 3rem;
+    }
+
+    .placeholder { color: #aaa; font-style: italic; }
+
+    .cols { display: grid; grid-template-columns: 1fr 2fr; gap: 1.5rem; margin-top: 1.5rem; }
+
+    .section-label {
+      font-weight: 600;
+      font-size: 0.9rem;
+      margin-bottom: 0.5rem;
+    }
+
+    .confidence-value {
+      font-size: 1.1rem;
+      font-weight: 600;
+    }
+
+    .confidence-high   { color: #2e7d32; }
+    .confidence-medium { color: #e65100; }
+    .confidence-low    { color: #c62828; }
+
+    .confidence-note {
+      font-size: 0.8rem;
+      color: #aaa;
+      margin-top: 0.3rem;
+    }
+
+    .change-item {
+      background: #fdf6ec;
+      border: 1px solid #e8d8b8;
+      border-radius: 4px;
+      padding: 0.35rem 0.7rem;
+      font-size: 0.85rem;
+      font-family: 'Courier New', monospace;
+      color: #5a4a2a;
+      margin-bottom: 0.35rem;
+    }
+
+    .warning-item {
+      background: #fff8ec;
+      border: 1px solid #f0c060;
+      border-radius: 4px;
+      padding: 0.35rem 0.7rem;
+      font-size: 0.85rem;
+      color: #7a5a10;
+      margin-bottom: 0.35rem;
+    }
+
+    footer {
+      margin-top: 3rem;
+      text-align: center;
+      font-size: 0.8rem;
+      color: #bbb;
+    }
+
+    #results { display: none; }
+  </style>
+</head>
+<body>
+  <div class="container">
+
+    <h1>Diacritizare Română</h1>
+    <p class="subtitle">Restaurare automată a diacriticelor pentru texte în limba română</p>
+
+    <label for="inputText">Text de intrare</label>
+    <textarea
+      id="inputText"
+      placeholder="Introduceți textul fără diacritice sau cu diacritice greșite..."
+    ></textarea>
+
+    <button id="btn" onclick="run()">Diacritizează</button>
+
+    <div id="results">
+      <hr />
+
+      <label>Text corectat</label>
+      <div class="result-box" id="outputText"></div>
+
+      <div class="cols">
+        <div>
+          <div class="section-label">Scor de încredere</div>
+          <div class="confidence-value" id="confidenceValue"></div>
+          <div class="confidence-note"></div>
+        </div>
+        <div>
+          <div class="section-label">Modificări aplicate</div>
+          <div id="changesList"></div>
+        </div>
+      </div>
+    </div>
+
+    <footer>Diacritizare robustă și detecție de diacritice greșite</footer>
+
+  </div>
+
+  <script>
+  function run() {
+    const input = document.getElementById("inputText").value.trim();
+    if (!input) { alert("Introduceți un text înainte de a continua."); return; }
+
+    // TODO: replace with a real call once the ByT5 model is integrated.
+      //  The endpoint expects: { original_text: input, model_output: <output from model> }
+      //  and returns: { final_text, changes_made, was_modified }
+
+    document.getElementById("outputText").innerHTML =
+      '<span class="placeholder">[placeholder — modelul nu este antrenat încă]</span>';
+
+    const confEl = document.getElementById("confidenceValue");
+    confEl.textContent = "Placeholder (0%)";
+    confEl.className = "confidence-value confidence-low";
+
+    const changesList = document.getElementById("changesList");
+    changesList.innerHTML = '<div class="change-item">— Placeholder</div>';
+
+    document.getElementById("results").style.display = "block";
+  }
+</script>
+</body>
+</html>

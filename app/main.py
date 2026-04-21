@@ -3,10 +3,12 @@ FastAPI service — Data Generation Pipeline
 Project: Diacritizare robustă și detecție de diacritice greșite (română)
 
 Endpoints:
+  GET  /                 — demo frontend (HTML page)
   POST /degrade          — degrade a single text or batch of texts
   POST /generate-dataset — generate a full (input, target) dataset from a source
   GET  /scenarios        — list available degradation scenarios
   GET  /health           — health check
+  POST /postprocess      — run post-processing on a model output
 """
 
 from __future__ import annotations
@@ -17,7 +19,8 @@ import time
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse, FileResponse
 from pydantic import BaseModel, Field, field_validator
 
 from degradation import (
@@ -33,6 +36,7 @@ from data_loader import (
     load_rolargesum,
     split_sentences,
 )
+from postprocessor import postprocess
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -45,6 +49,8 @@ app = FastAPI(
     ),
     version="0.1.0",
 )
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +115,18 @@ class DatasetRequest(BaseModel):
         return v
 
 
+class PostprocessRequest(BaseModel):
+    original_text: str = Field(..., description="The original degraded text that was fed to the model.")
+    model_output: str = Field(..., description="The raw text the model produced.")
+
+
+class PostprocessResponse(BaseModel):
+    original_output: str
+    final_text: str
+    changes_made: list[str]
+    was_modified: bool
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -153,6 +171,12 @@ def _load_source(req: DatasetRequest) -> list[str]:
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
+@app.get("/", response_class=HTMLResponse)
+def frontend():
+    """Serve the demo HTML frontend."""
+    return FileResponse("static/index.html")
+
 
 @app.get("/health")
 def health():
@@ -207,6 +231,24 @@ def degrade(req: DegradeRequest):
         samples=[_sample_to_out(s) for s in samples],
         total=len(samples),
         elapsed_ms=round(elapsed, 2),
+    )
+
+
+@app.post("/postprocess", response_model=PostprocessResponse)
+def postprocess_endpoint(req: PostprocessRequest):
+    """
+    Run post-processing on a model output.
+
+    Accepts the original degraded text and the raw model output, applies
+    all post-processing rules, and returns the cleaned result.
+    """
+    result = postprocess(req.original_text, req.model_output)
+
+    return PostprocessResponse(
+        original_output=result.original_output,
+        final_text=result.final_text,
+        changes_made=result.changes_made,
+        was_modified=result.was_modified,
     )
 
 
