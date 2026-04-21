@@ -186,9 +186,7 @@
     const input = document.getElementById("inputText").value.trim();
     if (!input) { alert("Introduceți un text înainte de a continua."); return; }
 
-    // TODO: replace with a real call once the ByT5 model is integrated.
-      //  The endpoint expects: { original_text: input, model_output: <output from model> }
-      //  and returns: { final_text, changes_made, was_modified }
+    // TODO: replace this with a real call once the ByT5 model is integrated.
 
     document.getElementById("outputText").innerHTML =
       '<span class="placeholder">[placeholder — modelul nu este antrenat încă]</span>';
