@@ -86,6 +86,16 @@
       font-size: 1.05rem;
       line-height: 1.7;
       min-height: 3rem;
+      word-wrap: break-word;
+    }
+
+    /* Inline highlight for characters the model/postprocessor changed */
+    mark.change-highlight {
+      background: #fdf1d5;
+      color: #5a4a2a;
+      padding: 0 1px;
+      border-radius: 2px;
+      font-weight: 600;
     }
 
     .placeholder { color: #aaa; font-style: italic; }
@@ -134,6 +144,17 @@
       margin-bottom: 0.35rem;
     }
 
+    .error-box {
+      background: #fff0ee;
+      border: 1px solid #f5b5ad;
+      border-left: 4px solid #c62828;
+      border-radius: 6px;
+      padding: 1rem 1.2rem;
+      color: #7a1f1f;
+      font-size: 0.95rem;
+      margin-top: 1rem;
+    }
+
     footer {
       margin-top: 3rem;
       text-align: center;
@@ -141,7 +162,7 @@
       color: #bbb;
     }
 
-    #results { display: none; }
+    #results, #error { display: none; }
   </style>
 </head>
 <body>
@@ -158,6 +179,8 @@
 
     <button id="btn" onclick="run()">Diacritizează</button>
 
+    <div id="error" class="error-box"></div>
+
     <div id="results">
       <hr />
 
@@ -168,7 +191,7 @@
         <div>
           <div class="section-label">Scor de încredere</div>
           <div class="confidence-value" id="confidenceValue"></div>
-          <div class="confidence-note"></div>
+          <div class="confidence-note" id="confidenceNote"></div>
         </div>
         <div>
           <div class="section-label">Modificări aplicate</div>
@@ -182,24 +205,122 @@
   </div>
 
   <script>
-  function run() {
-    const input = document.getElementById("inputText").value.trim();
-    if (!input) { alert("Introduceți un text înainte de a continua."); return; }
 
-    // TODO: replace this with a real call once the ByT5 model is integrated.
+    function escapeHtml(s) {
+      return s
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+    }
 
-    document.getElementById("outputText").innerHTML =
-      '<span class="placeholder">[placeholder — modelul nu este antrenat încă]</span>';
+    // Wrap each character whose index is in `positions` with a <mark> tag.
+    function highlightChanges(text, positions) {
+      if (!positions || positions.length === 0) return escapeHtml(text);
+      const set = new Set(positions);
+      let out = "";
+      for (let i = 0; i < text.length; i++) {
+        const ch = escapeHtml(text[i]);
+        if (set.has(i)) {
+          out += `<mark class="change-highlight">${ch}</mark>`;
+        } else {
+          out += ch;
+        }
+      }
+      return out;
+    }
 
-    const confEl = document.getElementById("confidenceValue");
-    confEl.textContent = "Placeholder (0%)";
-    confEl.className = "confidence-value confidence-low";
+    function classifyConfidence(score) {
+      if (score >= 0.95) return { cls: "confidence-high",   label: "ridicată" };
+      if (score >= 0.80) return { cls: "confidence-medium", label: "medie"    };
+      return              { cls: "confidence-low",    label: "scăzută"  };
+    }
 
-    const changesList = document.getElementById("changesList");
-    changesList.innerHTML = '<div class="change-item">— Placeholder</div>';
+    function showError(msg) {
+      const el = document.getElementById("error");
+      el.textContent = msg;
+      el.style.display = "block";
+      document.getElementById("results").style.display = "none";
+    }
 
-    document.getElementById("results").style.display = "block";
-  }
-</script>
+    function hideError() {
+      document.getElementById("error").style.display = "none";
+    }
+
+    async function run() {
+      const inputEl = document.getElementById("inputText");
+      const btn = document.getElementById("btn");
+      const input = inputEl.value.trim();
+
+      hideError();
+
+      if (!input) {
+        showError("Introduceți un text înainte de a continua.");
+        return;
+      }
+
+      btn.disabled = true;
+      btn.textContent = "Se procesează...";
+
+      try {
+        const resp = await fetch("/restore", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: input }),
+        });
+
+        if (!resp.ok) {
+          let msg = `Eroare ${resp.status}`;
+          try {
+            const err = await resp.json();
+            if (err && err.detail) msg = err.detail;
+          } catch (_) { /* ignore parse errors */ }
+          showError(msg);
+          return;
+        }
+
+        const data = await resp.json();
+        render(data);
+      } catch (e) {
+        showError("Eroare de rețea: " + e.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Diacritizează";
+      }
+    }
+
+    function render(data) {
+      // Restored text with inline highlighted changes
+      document.getElementById("outputText").innerHTML =
+        highlightChanges(data.restored, data.changed_positions);
+
+      const conf = classifyConfidence(data.confidence);
+      const confEl = document.getElementById("confidenceValue");
+      confEl.textContent = `${(data.confidence * 100).toFixed(1)}% (${conf.label})`;
+      confEl.className = "confidence-value " + conf.cls;
+
+      document.getElementById("confidenceNote").textContent =
+        `${data.changed_positions.length} caracter${data.changed_positions.length === 1 ? "" : "e"} modificat${data.changed_positions.length === 1 ? "" : "e"} · ${data.elapsed_ms.toFixed(0)} ms`;
+
+      // Changes list: a summary row for model edits, plus post-processor rows.
+      const changesList = document.getElementById("changesList");
+      const rows = [];
+
+      if (data.changed_positions.length > 0) {
+        rows.push(
+          `<div class="change-item">Modelul a modificat ${data.changed_positions.length} poziți${data.changed_positions.length === 1 ? "e" : "i"}</div>`
+        );
+      }
+      for (const change of (data.postprocessing_changes || [])) {
+        const cls = change.startsWith("WARNING") ? "warning-item" : "change-item";
+        rows.push(`<div class="${cls}">${escapeHtml(change)}</div>`);
+      }
+      if (rows.length === 0) {
+        rows.push('<div class="change-item placeholder">— nicio modificare</div>');
+      }
+
+      changesList.innerHTML = rows.join("");
+      document.getElementById("results").style.display = "block";
+    }
+  </script>
 </body>
 </html>

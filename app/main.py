@@ -1,13 +1,14 @@
 """
-FastAPI service — Data Generation Pipeline
+FastAPI service — Data Generation + Diacritics Restoration
 Project: Diacritizare robustă și detecție de diacritice greșite (română)
 
 Endpoints:
   GET  /                 — demo frontend (HTML page)
+  POST /restore          — restore diacritics using trained ByT5 model  ← NEW
   POST /degrade          — degrade a single text or batch of texts
   POST /generate-dataset — generate a full (input, target) dataset from a source
   GET  /scenarios        — list available degradation scenarios
-  GET  /health           — health check
+  GET  /health           — health check (reports model status)
   POST /postprocess      — run post-processing on a model output
 """
 
@@ -15,7 +16,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
 import time
+from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query
@@ -41,13 +45,74 @@ from postprocessor import postprocess
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Diacritics model — optional import (so data-generation endpoints still work
+# even if torch/transformers aren't installed or the trained model is missing)
+# ---------------------------------------------------------------------------
+
+try:
+    from predict import DiacriticsRestorer, RestorationResult
+    _PREDICT_AVAILABLE = True
+except ImportError as e:
+    _PREDICT_AVAILABLE = False
+    _PREDICT_IMPORT_ERROR = str(e)
+    logger.warning("Diacritics model module not available: %s", e)
+
+# Where to load the trained model from. Default assumes uvicorn is launched
+# from the `app/` directory (as is already the convention).
+_MODEL_PATH = os.environ.get(
+    "DIACRITICS_MODEL_PATH",
+    "../models/byt5-diacritics/final",
+)
+
+# Populated by the lifespan startup hook, read by the /restore endpoint.
+_RESTORER: Optional["DiacriticsRestorer"] = None
+
+
+# ---------------------------------------------------------------------------
+# App lifecycle: load the model once at startup, keep it in memory
+# ---------------------------------------------------------------------------
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Load the trained ByT5 model into memory once, at server startup."""
+    global _RESTORER
+
+    if not _PREDICT_AVAILABLE:
+        logger.warning(
+            "Diacritics restoration disabled — `predict` module not importable "
+            "(%s). /restore endpoint will return 503.",
+            _PREDICT_IMPORT_ERROR,
+        )
+    elif not os.path.exists(_MODEL_PATH):
+        logger.warning(
+            "Trained model not found at %s — /restore endpoint will return 503. "
+            "Set DIACRITICS_MODEL_PATH env var or train the model first.",
+            _MODEL_PATH,
+        )
+    else:
+        try:
+            logger.info("Loading diacritics restoration model from %s ...", _MODEL_PATH)
+            t0 = time.perf_counter()
+            _RESTORER = DiacriticsRestorer(_MODEL_PATH)
+            logger.info("Model loaded in %.1fs.", time.perf_counter() - t0)
+        except Exception as e:
+            logger.exception("Failed to load model from %s: %s", _MODEL_PATH, e)
+            _RESTORER = None
+
+    yield
+    # (no cleanup needed — PyTorch/transformers release GPU memory on process exit)
+
+
 app = FastAPI(
-    title="Romanian Diacritics — Data Generation API",
+    title="Romanian Diacritics — Restoration & Data Generation API",
     description=(
-        "Generates degraded Romanian text for training/evaluation of a diacritics "
-        "restoration model. Part of the NLP Techniques project (FII UAIC)."
+        "Restores diacritics on Romanian text using a fine-tuned ByT5 model, "
+        "and generates degraded training data. Part of the NLP Techniques project (FII UAIC)."
     ),
-    version="0.1.0",
+    version="0.2.0",
+    lifespan=lifespan,
 )
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -56,6 +121,27 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # ---------------------------------------------------------------------------
 # Request / Response schemas
 # ---------------------------------------------------------------------------
+
+class RestoreRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=10_000,
+                      description="Romanian text (may have missing or wrong diacritics).")
+
+    @field_validator("text")
+    @classmethod
+    def text_not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("text must not be empty or whitespace")
+        return v
+
+
+class RestoreResponse(BaseModel):
+    input: str
+    restored: str
+    changed_positions: list[int]
+    confidence: float
+    postprocessing_changes: list[str]
+    elapsed_ms: float
+
 
 class DegradeRequest(BaseModel):
     texts: list[str] = Field(..., min_length=1, description="One or more clean Romanian sentences.")
@@ -168,6 +254,43 @@ def _load_source(req: DatasetRequest) -> list[str]:
         raise HTTPException(status_code=422, detail=f"Unknown source '{source}'.")
 
 
+# Simple sentence splitter for chunking long /restore inputs. Unlike
+# data_loader.split_sentences it does NOT filter by length — we want every
+# sentence, not only the "training-worthy" ones.
+_RESTORE_SENT_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+# Byte budget per model call. ByT5 was fine-tuned at max_input_length=512;
+# we stay a bit under to leave headroom for the tokenizer's special tokens.
+_RESTORE_BYTE_BUDGET = 400
+
+
+def _restore_long_text(text: str, restorer: "DiacriticsRestorer") -> tuple[str, float]:
+    """Restore diacritics on text of any length by chunking into sentences.
+
+    Returns (restored_text, mean_confidence). Chunking is only triggered when
+    the input exceeds the model's comfortable byte budget — short inputs go
+    through a single model call.
+    """
+    if len(text.encode("utf-8")) <= _RESTORE_BYTE_BUDGET:
+        r = restorer.restore(text)
+        return r.restored, r.confidence
+
+    parts = _RESTORE_SENT_SPLIT_RE.split(text.strip())
+    restored_parts: list[str] = []
+    confidences: list[float] = []
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        r = restorer.restore(part)
+        restored_parts.append(r.restored)
+        confidences.append(r.confidence)
+
+    restored = " ".join(restored_parts)
+    mean_conf = sum(confidences) / len(confidences) if confidences else 1.0
+    return restored, mean_conf
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -180,7 +303,53 @@ def frontend():
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "model_loaded": _RESTORER is not None,
+        "model_path": _MODEL_PATH if _RESTORER is not None else None,
+    }
+
+
+@app.post("/restore", response_model=RestoreResponse)
+def restore(req: RestoreRequest):
+    """
+    Restore diacritics on Romanian text.
+
+    Runs the fine-tuned ByT5 model, then applies the rule-based post-processor
+    (URL/number/acronym preservation, cedilla fixes, OCR cleanup), and returns
+    the restored text plus metadata for the demo UI.
+    """
+    if _RESTORER is None:
+        detail = (
+            "Trained model is not loaded. "
+            "Train the model first (see scripts/train.py) or set the "
+            "DIACRITICS_MODEL_PATH environment variable to a valid model directory."
+        )
+        raise HTTPException(status_code=503, detail=detail)
+
+    t0 = time.perf_counter()
+
+    # 1) Model restoration (with auto-chunking for long inputs)
+    model_restored, confidence = _restore_long_text(req.text, _RESTORER)
+
+    # 2) Rule-based post-processor (URL/number/acronym preservation, cedilla, OCR)
+    pp = postprocess(req.text, model_restored)
+    final_text = pp.final_text
+
+    # 3) Recompute changed positions against the final post-processed text so
+    #    the UI highlights match what the user actually sees.
+    changed_positions = DiacriticsRestorer._diff_positions(req.text, final_text)
+
+    elapsed = (time.perf_counter() - t0) * 1000
+
+    return RestoreResponse(
+        input=req.text,
+        restored=final_text,
+        changed_positions=changed_positions,
+        confidence=confidence,
+        postprocessing_changes=pp.changes_made,
+        elapsed_ms=round(elapsed, 2),
+    )
 
 
 @app.get("/scenarios")
