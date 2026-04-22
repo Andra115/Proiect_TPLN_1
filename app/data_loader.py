@@ -111,3 +111,54 @@ DEMO_SENTENCES = [
     "Fântâna din centrul parcului a fost renovată recent.",
     "Echipa de fotbal a câștigat campionatul după ani de eforturi.",
 ]
+
+# ---------------------------------------------------------------------------
+# Local JSONL loader (RoLargeSum pre-downloaded)
+# ---------------------------------------------------------------------------
+
+def load_rolargesum_local(
+    path: str | Path | None = None,
+    max_sentences: int = 20_000,
+) -> list[str]:
+    """
+    Load clean Romanian sentences from a local RoLargeSum JSONL file.
+    Each line is a JSON object with at minimum a 'target' field containing
+    correctly diacritized text (as produced by the degradation pipeline).
+
+    Falls back to DEMO_SENTENCES if the file is not found.
+    """
+    if path is None:
+        # Default: look for data/train.jsonl relative to project root
+        path = Path(__file__).parent.parent / "data" / "train.jsonl"
+
+    path = Path(path)
+    if not path.exists():
+        logger.warning("Local JSONL not found at %s — falling back to DEMO_SENTENCES", path)
+        return DEMO_SENTENCES
+
+    import json
+    sentences: list[str] = []
+    skipped = 0
+
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+                # 'target' is the clean diacritized text
+                text = obj.get("target") or obj.get("article") or obj.get("summary") or ""
+                if text:
+                    sentences.extend(split_sentences(text))
+            except json.JSONDecodeError:
+                skipped += 1
+            if len(sentences) >= max_sentences:
+                break
+
+    if skipped:
+        logger.warning("Skipped %d malformed lines in %s", skipped, path)
+
+    sentences = sentences[:max_sentences]
+    logger.info("Loaded %d sentences from local JSONL %s", len(sentences), path)
+    return sentences
