@@ -17,10 +17,7 @@
       padding: 2.5rem 1rem;
     }
 
-    .container {
-      max-width: 720px;
-      margin: 0 auto;
-    }
+    .container { max-width: 720px; margin: 0 auto; }
 
     h1 {
       font-family: 'Playfair Display', serif;
@@ -84,19 +81,21 @@
       border-radius: 6px;
       padding: 1rem 1.2rem;
       font-size: 1.05rem;
-      line-height: 1.7;
+      line-height: 1.9;
       min-height: 3rem;
       word-wrap: break-word;
     }
 
-    /* Inline highlight for characters the model/postprocessor changed */
-    mark.change-highlight {
-      background: #fdf1d5;
-      color: #5a4a2a;
-      padding: 0 1px;
+    .conf-char {
+      padding: 1px 0;
       border-radius: 2px;
-      font-weight: 600;
+      transition: background-color 0.15s;
     }
+    .conf-char:hover {
+      outline: 1px solid rgba(0, 0, 0, 0.15);
+    }
+
+    .changed { border-bottom: 2px solid #c8a96e; font-weight: 600; }
 
     .placeholder { color: #aaa; font-style: italic; }
 
@@ -108,11 +107,7 @@
       margin-bottom: 0.5rem;
     }
 
-    .confidence-value {
-      font-size: 1.1rem;
-      font-weight: 600;
-    }
-
+    .confidence-value { font-size: 1.1rem; font-weight: 600; }
     .confidence-high   { color: #2e7d32; }
     .confidence-medium { color: #e65100; }
     .confidence-low    { color: #c62828; }
@@ -155,6 +150,31 @@
       margin-top: 1rem;
     }
 
+    .legend {
+      display: flex;
+      gap: 1.2rem;
+      font-size: 0.78rem;
+      color: #888;
+      margin-top: 0.5rem;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .legend-swatch {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 2px;
+      margin-right: 0.25rem;
+      vertical-align: middle;
+    }
+    .legend-changed-marker {
+      display: inline-block;
+      width: 12px;
+      border-bottom: 2px solid #c8a96e;
+      margin-right: 0.25rem;
+      vertical-align: middle;
+    }
+
     footer {
       margin-top: 3rem;
       text-align: center;
@@ -186,10 +206,17 @@
 
       <label>Text corectat</label>
       <div class="result-box" id="outputText"></div>
+      <div class="legend">
+        <span><span class="legend-swatch" style="background:#c8e6c9"></span>Încredere mare</span>
+        <span><span class="legend-swatch" style="background:#fff3c0"></span>Medie</span>
+        <span><span class="legend-swatch" style="background:#ffccc8"></span>Scăzută</span>
+        <span><span class="legend-changed-marker"></span>Caracter modificat</span>
+        <span style="color:#bbb">Hover pentru probabilitate exactă</span>
+      </div>
 
       <div class="cols">
         <div>
-          <div class="section-label">Scor de încredere</div>
+          <div class="section-label">Scor de încredere general</div>
           <div class="confidence-value" id="confidenceValue"></div>
           <div class="confidence-note" id="confidenceNote"></div>
         </div>
@@ -213,20 +240,49 @@
         .replace(/>/g, "&gt;");
     }
 
-    // Wrap each character whose index is in `positions` with a <mark> tag.
-    function highlightChanges(text, positions) {
-      if (!positions || positions.length === 0) return escapeHtml(text);
-      const set = new Set(positions);
-      let out = "";
-      for (let i = 0; i < text.length; i++) {
-        const ch = escapeHtml(text[i]);
-        if (set.has(i)) {
-          out += `<mark class="change-highlight">${ch}</mark>`;
-        } else {
-          out += ch;
-        }
+    function confidenceColor(prob, isWhitespace) 
+    {
+      if (isWhitespace || prob >= 0.999) return "transparent";
+      let r, g, b;
+      if (prob < 0.5) 
+      {
+        const t = prob / 0.5;
+        r = 255;
+        g = Math.round(204 + (243 - 204) * t);
+        b = Math.round(200 + (192 - 200) * t);
+      } 
+      else 
+      {
+        const t = (prob - 0.5) / 0.5;
+        r = Math.round(255 + (200 - 255) * t);
+        g = Math.round(243 + (230 - 243) * t);
+        b = Math.round(192 + (201 - 192) * t);
       }
-      return out;
+      return `rgb(${r}, ${g}, ${b})`;
+    }
+
+    function renderColoredText(text, charConfs, changedSet) {
+      const out = [];
+      for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+
+        if (ch === "\n") {
+          out.push("<br>");
+          continue;
+        }
+
+        const prob = charConfs[i] ?? 1.0;
+        const isWS = /\s/.test(ch);
+        const bg = confidenceColor(prob, isWS);
+        const cls = "conf-char" + (changedSet.has(i) ? " changed" : "");
+        const title = `p = ${(prob * 100).toFixed(1)}%`;
+
+        const escaped = escapeHtml(ch).replace(/ /g, "&nbsp;");
+        out.push(
+          `<span class="${cls}" style="background:${bg}" title="${title}">${escaped}</span>`
+        );
+      }
+      return out.join("");
     }
 
     function classifyConfidence(score) {
@@ -289,25 +345,27 @@
     }
 
     function render(data) {
-      // Restored text with inline highlighted changes
+      const changedSet = new Set(data.changed_positions || []);
+      const charConfs = data.char_confidences || [];
+
       document.getElementById("outputText").innerHTML =
-        highlightChanges(data.restored, data.changed_positions);
+        renderColoredText(data.restored, charConfs, changedSet);
 
       const conf = classifyConfidence(data.confidence);
       const confEl = document.getElementById("confidenceValue");
       confEl.textContent = `${(data.confidence * 100).toFixed(1)}% (${conf.label})`;
       confEl.className = "confidence-value " + conf.cls;
 
+      const changedCount = data.changed_positions.length;
       document.getElementById("confidenceNote").textContent =
-        `${data.changed_positions.length} caracter${data.changed_positions.length === 1 ? "" : "e"} modificat${data.changed_positions.length === 1 ? "" : "e"} · ${data.elapsed_ms.toFixed(0)} ms`;
+        `${changedCount} caracter${changedCount === 1 ? "" : "e"} modificat${changedCount === 1 ? "" : "e"} · ${data.elapsed_ms.toFixed(0)} ms`;
 
-      // Changes list: a summary row for model edits, plus post-processor rows.
       const changesList = document.getElementById("changesList");
       const rows = [];
 
-      if (data.changed_positions.length > 0) {
+      if (changedCount > 0) {
         rows.push(
-          `<div class="change-item">Modelul a modificat ${data.changed_positions.length} poziți${data.changed_positions.length === 1 ? "e" : "i"}</div>`
+          `<div class="change-item">Modelul a modificat ${changedCount} poziți${changedCount === 1 ? "e" : "i"}</div>`
         );
       }
       for (const change of (data.postprocessing_changes || [])) {

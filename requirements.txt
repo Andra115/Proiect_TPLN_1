@@ -6,7 +6,10 @@ huggingface-hub>=0.23.0
 pytest
 aiofiles
 
+# Training + inference (deliverable 6.2: model antrenat + script de inferență)
+# NOTE: install torch *first* with the correct CUDA wheel — see TRAINING.md.
 torch>=2.1.0
 transformers>=4.40.0
 accelerate>=0.30.0
 numpy>=1.24.0
+matplotlib>=3.7.0
